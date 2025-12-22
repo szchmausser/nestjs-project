@@ -1,0 +1,35 @@
+services:
+  nodejs-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nestjs-project
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      # Montar código fuente
+      - .:/app
+      # Volume anónimo para node_modules (mejor rendimiento)
+      - /app/node_modules
+      - npm-cache:/home/nodeuser/.npm # Añadir esta línea Optimización 1: Caché de npm
+    ports:
+      - "3000:3000" # React, Express, NestJS
+      #- "5174:5173" # Vite * Mapeo: Accedes por 5174 en Windows -> 5173 en Docker
+      #- "4200:4200"    # Angular
+      #- "8089:8080"    # Vue CLI
+      #- "5000:5000"    # Flask, otros
+    environment:
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true # Para hot reload
+    working_dir: /app
+    command: tail -f /dev/null
+    networks:
+      - red_servicios
+    restart: unless-stopped
+networks:
+  red_servicios:
+    external: true
+volumes:
+  npm-cache:
+    driver: local
