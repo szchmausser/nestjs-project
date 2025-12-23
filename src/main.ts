@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
+import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
 /**
  * FUNCIÓN DE ARRANQUE (Bootstrap)
@@ -22,6 +23,23 @@ async function bootstrap() {
    * directamente de las cookies del navegador de forma automática.
    */
   app.use(cookieParser());
+
+  /**
+   * 2. MIDDLEWARE: Global Exception Filter
+   * ¿POR QUÉ ES NECESARIO?:
+   * Implementamos un filtro global para manejar excepciones de manera centralizada.
+   * Cada vez que ocurra un error en la aplicación, nuestro filtro lo captura y
+   * responde con una respuesta estándar que contiene:
+   * - Un estado HTTP apropiado
+   * - Un mensaje descriptivo
+   * - Un timestamp
+   * - El path de la petición
+   * - El error original (si es un objeto)
+   * * Vínculo con la seguridad:
+   * Aunque no es directamente relacionado con la seguridad, es una práctica
+   * recomendada para mejorar la experiencia del usuario y la depuración.
+   */
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   /**
    * 3. INICIO DEL SERVIDOR
