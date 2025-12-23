@@ -1,14 +1,10 @@
-import {
-  ConflictException,
-  Injectable,
-  InternalServerErrorException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma.service';
 import * as bcrypt from 'bcrypt';
 import { RegisterDto } from './dto/register.dto';
 import { UserPayload } from './interfaces/user-payload.interface';
-import { Prisma } from 'generated/prisma/client';
+// import { Prisma } from 'generated/prisma/client';
 
 @Injectable()
 export class AuthService {
@@ -25,42 +21,19 @@ export class AuthService {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // 3. Guardamos en BD.
-    try {
-      const user = await this.prisma.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-        },
-      });
+    const user = await this.prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+      },
+    });
 
-      // 4. Extraemos los datos del usuario removiendo la contraseña.
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { password: _, ...rest } = user;
+    // 4. Extraemos los datos del usuario removiendo la contraseña.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password: _, ...rest } = user;
 
-      // 5. Devolvemos los datos del usuario sin la contraseña.
-      return rest;
-    } catch (error) {
-      /**
-       * MANEJO DE EXCEPCIONES ESPECÍFICAS DE PRISMA
-       * P2002: Código de error de Prisma para violación de restricción única (Unique Constraint).
-       */
-      if (error instanceof Prisma.PrismaClientKnownRequestError) {
-        if (error.code === 'P2002') {
-          throw new ConflictException(
-            `El correo electrónico '${email}' ya se encuentra registrado.`,
-          );
-        }
-      }
-
-      /**
-       * ERROR GENÉRICO
-       * Si el error no es por duplicado, lanzamos un 500 estándar para no
-       * exponer detalles técnicos de la base de datos al cliente.
-       */
-      throw new InternalServerErrorException(
-        'Ocurrió un error inesperado al intentar crear el usuario.',
-      );
-    }
+    // 5. Devolvemos los datos del usuario sin la contraseña.
+    return rest;
   }
 
   async validateUser(email: string, pass: string): Promise<UserPayload | null> {
@@ -125,4 +98,62 @@ export class AuthService {
     // await this.usersService.revokeToken(userId);
     return;
   }
+
+  // manualFireExceptionTest() {
+  // ----------------------------------------------------------------
+  // BLOQUE DE PRUEBA TEMPORAL PARA DISPARAR MANUALMENTE UN ERROR DE PRISMA
+  // ----------------------------------------------------------------
+  // throw new Prisma.PrismaClientKnownRequestError('Simulación de duplicado', {
+  //   code: 'P2003',
+  //   clientVersion: '7.2.0',
+  //   meta: {
+  //     modelName: 'User',
+  //     driverAdapterError: {
+  //       cause: {
+  //         constraint: { fields: ['email'] },
+  //       },
+  //     },
+  //   },
+  // });
+  // throw new Prisma.PrismaClientKnownRequestError('No encontrado', {
+  //   code: 'P2025',
+  //   clientVersion: '7.2.0',
+  //   meta: { modelName: 'Producto', cause: 'Record not found' },
+  // });
+  // throw new Prisma.PrismaClientKnownRequestError('Fallo de relación', {
+  //   code: 'P2003',
+  //   clientVersion: '7.2.0',
+  //   meta: { field_name: 'categoriaId', modelName: 'Producto' },
+  // });
+  // throw new Prisma.PrismaClientInitializationError(
+  //   'Error de conexión',
+  //   '7.2.0',
+  //   'P1001',
+  // );
+  // throw new Prisma.PrismaClientValidationError(
+  //   'Datos inconsistentes con el modelo',
+  //   {
+  //     clientVersion: '7.2.0',
+  //   },
+  // );
+  // throw new Prisma.PrismaClientKnownRequestError('Valor inválido', {
+  //   code: 'P2005',
+  //   clientVersion: '7.2.0',
+  //   meta: {
+  //     modelName: 'Producto',
+  //     field_name: 'precio', // <--- Aquí es donde tu filtro busca el dato
+  //   },
+  // });
+  // throw new Prisma.PrismaClientKnownRequestError('Valor inválido', {
+  //   code: 'P2006',
+  //   clientVersion: '7.2.0',
+  //   meta: {
+  //     modelName: 'Producto',
+  //     field_name: 'precio', // <--- Aquí es donde tu filtro busca el dato
+  //   },
+  // });
+  // ----------------------------------------------------------------
+  // Fin del bloque de prueba
+  // ----------------------------------------------------------------
+  // }
 }
