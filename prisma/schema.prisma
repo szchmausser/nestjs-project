@@ -10,3 +10,11 @@ generator client {
 datasource db {
   provider = "sqlite"
 }
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique // 👈 Crucial: No queremos usuarios duplicados
+  password  String // 👈 Guardará el HASH, no la contraseña real
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
