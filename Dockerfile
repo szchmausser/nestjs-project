@@ -2,7 +2,7 @@
 FROM node:20-alpine
 
 # Instalar herramientas útiles
-RUN apk add --no-cache bash git curl
+RUN apk add --no-cache bash git curl sqlite
 
 # Establecer directorio de trabajo
 WORKDIR /app

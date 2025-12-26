@@ -5,6 +5,7 @@ import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { AppController } from './app.controller';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { PermissionModule } from './permission/permission.module';
 
 /**
  * MÓDULO RAÍZ: AppModule
@@ -15,6 +16,7 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
   imports: [
     // Encapsula toda la lógica de JWT, Estrategias y manejo de usuarios
     AuthModule,
+    PermissionModule,
   ],
   controllers: [
     // Rutas de prueba para validar la seguridad

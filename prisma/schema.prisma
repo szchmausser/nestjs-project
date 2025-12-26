@@ -11,10 +11,550 @@ datasource db {
   provider = "sqlite"
 }
 
+enum Action {
+  manage
+  create
+  read
+  update
+  delete
+}
+
+enum SubjectEnum {
+  Post
+  User
+  all
+}
+
+// =============================================================================
+// SISTEMA DE AUTORIZACIÓN HÍBRIDO: RBAC + ABAC + Claims
+// =============================================================================
+// 
+// Este schema implementa un sistema de autorización flexible que combina:
+// 
+// 1. RBAC (Role-Based Access Control):
+//    - Los usuarios heredan permisos a través de roles
+//    - Un usuario puede tener múltiples roles simultáneamente
+//    - Los roles agrupan permisos lógicamente relacionados
+// 
+// 2. ABAC (Attribute-Based Access Control):
+//    - Los permisos pueden tener condiciones basadas en atributos del recurso
+//    - Ejemplo: { "authorId": "${user.id}" } permite solo acceder a recursos propios
+//    - Las condiciones se evalúan en tiempo de ejecución por CASL
+// 
+// 3. Claims (Permisos Directos):
+//    - Permisos asignados directamente al usuario, sin pasar por roles
+//    - Pueden OTORGAR capacidades extras (inverted: false)
+//    - Pueden REVOCAR capacidades heredadas (inverted: true)
+//    - Útil para excepciones, delegaciones temporales o sanciones
+// 
+// 4. Características Avanzadas:
+//    - Permisos y roles con expiración temporal
+//    - Auditoría completa (quién, cuándo, por qué)
+//    - Soft delete para preservar historial
+//    - Control de usuarios activos/inactivos
+// 
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// ENTIDAD CORE: Usuario
+// -----------------------------------------------------------------------------
+// Representa cualquier actor del sistema que requiera autenticación y autorización.
+// Un usuario puede estar activo, inactivo o soft-deleted.
+// -----------------------------------------------------------------------------
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique // 👈 Crucial: No queremos usuarios duplicados
-  password  String // 👈 Guardará el HASH, no la contraseña real
+  id Int @id @default(autoincrement())
+
+  // Identificador único para autenticación
+  email String @unique
+
+  // Información básica del usuario
+  name String?
+
+  password String
+
+  // -------------------------------------------------------------------------
+  // CONTROL DE ACCESO
+  // -------------------------------------------------------------------------
+
+  // Permite deshabilitar el acceso sin eliminar datos históricos.
+  // false = Usuario bloqueado temporalmente (suspensión, sanción, etc.)
+  // true = Usuario con acceso normal al sistema
+  isActive           Boolean   @default(true)
+  // Opcionalmente, registrar cuándo y por qué se desactivó el usuario
+  deactivatedAt      DateTime?
+  deactivationReason String?
+
+  // Soft delete: Marca de tiempo de eliminación lógica.
+  // null = Usuario activo en el sistema
+  // timestamp = Usuario eliminado (pero datos preservados para auditoría)
+  // NUNCA eliminar físicamente usuarios con actividad histórica
+  deletedAt DateTime?
+
+  // -------------------------------------------------------------------------
+  // TIMESTAMPS DE AUDITORÍA
+  // -------------------------------------------------------------------------
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // Útil para seguridad: detectar cuentas inactivas o comprometidas
+  lastLoginAt DateTime?
+
+  // -------------------------------------------------------------------------
+  // RELACIONES DE AUTORIZACIÓN
+  // -------------------------------------------------------------------------
+
+  // Roles asignados a este usuario (herencia de permisos)
+  // Un usuario puede tener múltiples roles: ['EDITOR', 'MODERATOR']
+  roles UserRole[] @relation("UserRoles")
+
+  // Roles que este usuario ha asignado a otros (auditoría)
+  // Permite rastrear: "¿Quién le dio rol de ADMIN a Juan?"
+  assignedRoles UserRole[] @relation("AssignedRoles")
+
+  // Permisos directos asignados a este usuario (excepciones/claims)
+  // Pueden ser grants (permisos extra) o revocations (prohibiciones)
+  directPermissions UserPermission[] @relation("UserPermissions")
+
+  // Permisos que este usuario ha asignado a otros (auditoría)
+  assignedPermissions UserPermission[] @relation("AssignedPermissions")
+
+  // -------------------------------------------------------------------------
+  // ÍNDICES DE PERFORMANCE
+  // -------------------------------------------------------------------------
+
+  // Búsqueda de usuarios activos por email (login común)
+  @@index([email, isActive])
+  // Filtrado de usuarios eliminados (reportes de auditoría)
+  @@index([deletedAt])
+}
+
+// -----------------------------------------------------------------------------
+// ENTIDAD CORE: Rol
+// -----------------------------------------------------------------------------
+// Un rol agrupa un conjunto de permisos relacionados lógicamente.
+// Ejemplos: 'ADMIN', 'EDITOR', 'MODERATOR', 'VIEWER', 'GUEST'
+// 
+// PRINCIPIO DE DISEÑO:
+// - Los roles deben representar funciones o responsabilidades del negocio
+// - Evitar roles como 'USUARIO_CON_PERMISO_X' (usar permisos directos)
+// - Un rol debe ser reutilizable para múltiples usuarios
+// -----------------------------------------------------------------------------
+model Role {
+  id Int @id @default(autoincrement())
+
+  // Identificador único del rol en el sistema (convención: UPPER_SNAKE_CASE)
+  // Ejemplos: 'ADMIN', 'CONTENT_EDITOR', 'FINANCIAL_ANALYST'
+  name String @unique
+
+  // Documentación interna para administradores del sistema.
+  // Describe el propósito del rol, casos de uso y responsabilidades.
+  // Ejemplo: 'Puede editar y publicar contenido, pero no eliminar usuarios'
+  description String?
+
+  // Permite deshabilitar roles sin eliminar su configuración.
+  // false = Rol deshabilitado (no se aplica aunque esté asignado)
+  // true = Rol activo
+  // Útil para deprecar roles gradualmente o hacer pruebas
+  isActive Boolean @default(true)
+
+  // -------------------------------------------------------------------------
+  // TIMESTAMPS
+  // -------------------------------------------------------------------------
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // -------------------------------------------------------------------------
+  // RELACIONES
+  // -------------------------------------------------------------------------
+
+  // Permisos que componen este rol (configuración estática del rol)
+  permissions RolePermission[]
+
+  // Usuarios que tienen este rol asignado
+  users UserRole[]
+
+  // -------------------------------------------------------------------------
+  // ÍNDICES DE PERFORMANCE
+  // -------------------------------------------------------------------------
+
+  // Filtrado de roles activos (al listar roles disponibles)
+  @@index([isActive])
+}
+
+// -----------------------------------------------------------------------------
+// ENTIDAD CORE: Permiso Atómico
+// -----------------------------------------------------------------------------
+// Representa una acción específica sobre un tipo de recurso.
+// Basado en el modelo de CASL: [Acción, Sujeto, Condiciones?]
+// 
+// EJEMPLOS DE PERMISOS:
+// - { action: 'read', subject: 'Post' }
+//   → Puede leer cualquier post
+// 
+// - { action: 'delete', subject: 'Post', conditions: { authorId: '${user.id}' } }
+//   → Solo puede eliminar sus propios posts
+// 
+// - { action: 'manage', subject: 'all' }
+//   → Permiso de super-admin (todas las acciones en todos los recursos)
+// -----------------------------------------------------------------------------
+model Permission {
+  id Int @id @default(autoincrement())
+
+  // -------------------------------------------------------------------------
+  // CASL: Definición de la Capacidad
+  // -------------------------------------------------------------------------
+
+  // Acción que se permite realizar (verbo).
+  // Valores estándar CASL:
+  // - 'create': Crear nuevos recursos
+  // - 'read': Leer/consultar recursos
+  // - 'update': Modificar recursos existentes
+  // - 'delete': Eliminar recursos
+  // - 'manage': Todas las acciones (equivale a wildcard *)
+  // 
+  // Puedes definir acciones custom: 'publish', 'approve', 'export', etc.
+  action Action
+
+  // Tipo de recurso sobre el que se aplica la acción (sustantivo).
+  // Corresponde a tus modelos de dominio: 'Post', 'User', 'Comment', 'Order'
+  // Valor especial: 'all' = aplica a todos los recursos del sistema
+  subject SubjectEnum
+
+  // Descripción legible para humanos del permiso.
+  // Útil para interfaces de administración y documentación.
+  // Ejemplo: 'Permite editar posts de otros usuarios'
+  //          'Solo puede eliminar comentarios en posts propios'
+  description String?
+
+  // -------------------------------------------------------------------------
+  // ABAC: Condiciones Dinámicas (Attribute-Based Access Control)
+  // -------------------------------------------------------------------------
+
+  // Condiciones opcionales en formato JSON que deben cumplirse.
+  // Las condiciones se evalúan contra el recurso en tiempo de ejecución.
+  // 
+  // SINTAXIS:
+  // - Variables de usuario: ${user.id}, ${user.email}, ${user.role}
+  // - Propiedades del recurso: campos del modelo (authorId, status, etc.)
+  // 
+  // EJEMPLOS:
+  // 
+  // 1. Ownership (solo recursos propios):
+  //    { "authorId": "${user.id}" }
+  // 
+  // 2. Estado del recurso:
+  //    { "isPublished": true }
+  //    { "status": "draft" }
+  // 
+  // 3. Condiciones combinadas (AND implícito):
+  //    { "authorId": "${user.id}", "status": "draft" }
+  //    → Solo puede editar sus propios borradores
+  // 
+  // 4. Condiciones complejas (usando operadores de MongoDB):
+  //    { "createdAt": { "$gte": "2024-01-01" } }
+  //    { "price": { "$lte": 1000 } }
+  // 
+  // null = Sin condiciones (permiso global en el subject)
+  conditions Json?
+
+  // -------------------------------------------------------------------------
+  // TIMESTAMPS
+  // -------------------------------------------------------------------------
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // -------------------------------------------------------------------------
+  // RELACIONES
+  // -------------------------------------------------------------------------
+
+  // Roles que incluyen este permiso
+  roles RolePermission[]
+
+  // Usuarios con este permiso asignado directamente (claims)
+  users UserPermission[]
+
+  // -------------------------------------------------------------------------
+  // ÍNDICES DE PERFORMANCE Y CONSTRAINTS
+  // -------------------------------------------------------------------------
+
+  // Evita duplicados: cada par (action, subject) debe ser único
+  // Ejemplo: no puede haber dos permisos 'read' sobre 'Post'
+  // Si necesitas diferentes condiciones, usa el campo 'conditions'
+  // @@unique([action, subject])
+  // Búsquedas comunes al evaluar permisos
+  @@index([action])
+  @@index([subject])
+}
+
+// -----------------------------------------------------------------------------
+// TABLA INTERMEDIA: Usuario ↔ Rol
+// -----------------------------------------------------------------------------
+// Relación muchos-a-muchos con metadatos de auditoría y control temporal.
+// 
+// FLUJO DE HERENCIA:
+// User → UserRole → Role → RolePermission → Permission
+// 
+// CASOS DE USO:
+// - Asignación permanente: expiresAt = null
+// - Delegación temporal: expiresAt = futuro (ej: reemplazo por vacaciones)
+// - Período de prueba: expiresAt = 30 días después
+// - Sanción temporal: eliminar rol, vuelve a asignar cuando expire sanción
+// -----------------------------------------------------------------------------
+model UserRole {
+  userId Int
+  roleId Int
+
+  // -------------------------------------------------------------------------
+  // AUDITORÍA: ¿Quién, Cuándo?
+  // -------------------------------------------------------------------------
+
+  // Timestamp de asignación del rol
+  assignedAt DateTime @default(now())
+
+  // ID del usuario administrador que realizó la asignación.
+  // null = Asignación automática del sistema (ej: rol por defecto)
+  // int = ID del admin responsable
+  // 
+  // Permite responder: "¿Quién le dio acceso de ADMIN a este usuario?"
+  assignedBy Int?
+
+  // -------------------------------------------------------------------------
+  // CONTROL TEMPORAL
+  // -------------------------------------------------------------------------
+
+  // Fecha de expiración del rol (opcional).
+  // null = Asignación permanente
+  // timestamp futuro = Rol temporal (se ignora automáticamente después de esta fecha)
+  // 
+  // CASOS DE USO:
+  // 1. Acceso temporal de contratistas/consultores
+  // 2. Delegación de autoridad durante ausencias
+  // 3. Período de prueba con permisos elevados
+  // 4. Roles promocionales con fecha límite
+  // 
+  // IMPLEMENTACIÓN: El factory de CASL debe filtrar roles expirados:
+  // WHERE expiresAt IS NULL OR expiresAt > NOW()
+  expiresAt DateTime?
+
+  // -------------------------------------------------------------------------
+  // RELACIONES
+  // -------------------------------------------------------------------------
+
+  user User @relation("UserRoles", fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  // Relación de auditoría: usuario que asignó este rol
+  assignedByUser User? @relation("AssignedRoles", fields: [assignedBy], references: [id], onDelete: SetNull)
+
+  // -------------------------------------------------------------------------
+  // CONSTRAINTS E ÍNDICES
+  // -------------------------------------------------------------------------
+
+  // PK compuesta: un usuario no puede tener el mismo rol duplicado
+  @@id([userId, roleId])
+  // Búsquedas eficientes
+  @@index([userId]) // "¿Qué roles tiene este usuario?"
+  @@index([roleId]) // "¿Qué usuarios tienen este rol?"
+  @@index([expiresAt]) // Job para limpiar roles expirados
+  @@index([assignedBy]) // Auditoría: "¿Qué roles asignó este admin?"
+}
+
+// -----------------------------------------------------------------------------
+// TABLA INTERMEDIA: Rol ↔ Permiso
+// -----------------------------------------------------------------------------
+// Configura qué permisos atómicos componen cada rol.
+// Esta es la configuración estática del sistema (cambia poco, solo por admins).
+// 
+// EJEMPLO:
+// Rol 'CONTENT_EDITOR' podría tener:
+// - (create, Post)
+// - (read, Post)
+// - (update, Post) con conditions: { authorId: '${user.id}' }
+// - (delete, Post) con conditions: { authorId: '${user.id}' }
+// - (read, Comment)
+// - (delete, Comment) // Sin conditions = puede borrar cualquier comentario
+// -----------------------------------------------------------------------------
+model RolePermission {
+  roleId       Int
+  permissionId Int
+
+  // -------------------------------------------------------------------------
+  // RELACIONES
+  // -------------------------------------------------------------------------
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  // -------------------------------------------------------------------------
+  // CONSTRAINTS E ÍNDICES
+  // -------------------------------------------------------------------------
+
+  // PK compuesta: un rol no puede tener el mismo permiso duplicado
+  @@id([roleId, permissionId])
+  @@index([roleId]) // "¿Qué permisos tiene este rol?"
+  @@index([permissionId]) // "¿En qué roles se usa este permiso?"
+}
+
+// -----------------------------------------------------------------------------
+// TABLA INTERMEDIA: Usuario ↔ Permiso Directo (CLAIMS)
+// -----------------------------------------------------------------------------
+// Permisos asignados directamente al usuario, sin pasar por roles.
+// Este es el mecanismo para EXCEPCIONES al modelo de roles.
+// 
+// DOS MODOS DE OPERACIÓN:
+// 
+// 1. GRANT (inverted: false) - Otorgar Capacidad Extra
+//    Casos de uso:
+//    - Usuario normal necesita temporalmente permisos de admin
+//    - Excepción puntual para proyecto específico
+//    - Delegación de autoridad sin cambiar rol permanente
+//    Ejemplo: Usuario 'viewer' que puede 'delete' Posts temporalmente
+// 
+// 2. REVOKE (inverted: true) - Quitar Capacidad Heredada
+//    Casos de uso:
+//    - Sanción: mantener rol pero quitar permisos específicos
+//    - Período de prueba: rol completo pero sin acciones peligrosas
+//    - Restricción temporal por incidente de seguridad
+//    Ejemplo: Usuario 'editor' que NO puede 'publish' Posts durante 30 días
+// 
+// PRECEDENCIA (orden de evaluación):
+// 1. Permisos heredados de roles (base)
+// 2. User permissions con inverted: false ( = GRANTS => suma capacidades)
+// 3. User permissions con inverted: true (= REVOKE => resta capacidades, gana sobre todo)
+//
+// En CASL, el orden en el que se definen las reglas es vital porque la última regla que coincida es la que prevalece.
+// Al documentar que el REVOKE gana sobre todo, le estás diciendo al programador que debe definir las reglas en el orden
+// correcto al construir las abilities.
+// - Primero debe iterar y aplicar todos los can de los Roles.
+// - Luego debe aplicar los can de los Permisos Directos (inverted: false).
+// - Y al final de todo, debe aplicar los cannot (inverted: true).
+// Si se hiciera en otro orden (por ejemplo, poner los cannot al principio y luego los can de los roles),
+// el permiso del rol terminaría "pisando" la prohibición y el sistema fallaría. Tu comentario blinda esa lógica.
+// -----------------------------------------------------------------------------
+model UserPermission {
+  userId       Int
+  permissionId Int
+
+  // -------------------------------------------------------------------------
+  // CONTROL DE EFECTO: Grant vs Revoke
+  // -------------------------------------------------------------------------
+
+  // Define si el permiso se OTORGA o se REVOCA.
+  // 
+  // false (default) = GRANT
+  //   → Otorga este permiso al usuario, incluso si no lo tiene por sus roles
+  //   → Expande las capacidades del usuario
+  //   → Ejemplo: Usuario sin rol 'delete:Post' recibe este permiso directo
+  // 
+  // true = REVOKE (Inversión)
+  //   → Prohíbe explícitamente este permiso, incluso si lo hereda de roles
+  //   → Reduce las capacidades del usuario
+  //   → Tiene precedencia sobre grants (la prohibición gana)
+  //   → Ejemplo: Usuario con rol 'editor' (que incluye 'delete:Post')
+  //               pero se le revoca específicamente ese permiso
+  // 
+  // IMPLEMENTACIÓN EN CASL:
+  // if (inverted) {
+  //   cannot(action, subject, conditions)
+  // } else {
+  //   can(action, subject, conditions)
+  // }
+  inverted Boolean @default(false)
+
+  // -------------------------------------------------------------------------
+  // AUDITORÍA Y CONTEXTO
+  // -------------------------------------------------------------------------
+
+  // Justificación textual de por qué se otorgó/revocó este permiso.
+  // CRÍTICO para soporte técnico y auditorías de seguridad.
+  // 
+  // Ejemplos de razones válidas:
+  // - "Acceso temporal para proyecto X (aprobado por CTO)"
+  // - "Sanción por violación de políticas (ticket #1234)"
+  // - "Período de prueba en nuevo rol (30 días)"
+  // - "Delegación durante ausencia de titular (vacaciones)"
+  // - "Excepción por requerimiento legal (caso #ABC)"
+  // 
+  // RECOMENDACIÓN: Hacer este campo obligatorio en la lógica de negocio
+  reason String?
+
+  // Timestamp de asignación
+  assignedAt DateTime @default(now())
+
+  // ID del administrador que otorgó/revocó el permiso
+  // null = Acción automática del sistema
+  assignedBy Int?
+
+  // -------------------------------------------------------------------------
+  // CONTROL TEMPORAL
+  // -------------------------------------------------------------------------
+
+  // Fecha de expiración del permiso directo (opcional).
+  // null = Permanente
+  // timestamp futuro = Temporal
+  // 
+  // CASOS DE USO:
+  // - Permisos temporales para consultores
+  // - Sanciones con tiempo límite (suspensión de 30 días)
+  // - Accesos de emergencia que expiran automáticamente
+  // - Delegaciones durante ausencias
+  // 
+  // IMPLEMENTACIÓN: Filtrar en query:
+  // WHERE expiresAt IS NULL OR expiresAt > NOW()
+  expiresAt DateTime?
+
+  // -------------------------------------------------------------------------
+  // RELACIONES
+  // -------------------------------------------------------------------------
+
+  user           User       @relation("UserPermissions", fields: [userId], references: [id], onDelete: Cascade)
+  permission     Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  assignedByUser User?      @relation("AssignedPermissions", fields: [assignedBy], references: [id], onDelete: SetNull)
+
+  // -------------------------------------------------------------------------
+  // CONSTRAINTS E ÍNDICES
+  // -------------------------------------------------------------------------
+
+  // PK compuesta: un usuario no puede tener el mismo permiso duplicado
+  // (aunque el campo 'inverted' podría cambiar, solo debe existir uno)
+  @@id([userId, permissionId])
+  @@index([userId]) // "¿Qué permisos directos tiene este usuario?"
+  @@index([permissionId]) // "¿Qué usuarios tienen este permiso directo?"
+  @@index([inverted]) // Auditoría: "¿Qué permisos están revocados?"
+  @@index([expiresAt]) // Job para limpiar permisos expirados
+  @@index([assignedBy]) // Auditoría: "¿Qué permisos asignó este admin?"
+}
+
+// -----------------------------------------------------------------------------
+// EJEMPLO: Recurso Protegido
+// -----------------------------------------------------------------------------
+// Modelo de dominio sobre el cual se aplican los permisos.
+// Cada recurso debe tener campos relevantes para evaluar conditions.
+// -----------------------------------------------------------------------------
+model Post {
+  id      Int    @id @default(autoincrement())
+  title   String
+  content String
+
+  // Campo usado en conditions para ownership
+  // Ejemplo condition: { "authorId": "${user.id}" }
+  authorId Int
+
+  // Campo usado en conditions para estado
+  // Ejemplo condition: { "isPublished": false }
+  isPublished Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // -------------------------------------------------------------------------
+  // ÍNDICES PARA CONDICIONES FRECUENTES
+  // -------------------------------------------------------------------------
+
+  @@index([authorId]) // Condiciones de ownership
+  @@index([isPublished]) // Condiciones de estado
+  @@index([authorId, isPublished]) // Condiciones combinadas
 }
