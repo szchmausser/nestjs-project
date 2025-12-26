@@ -10,12 +10,10 @@ services:
     volumes:
       # Montar código fuente
       - .:/app
-      # Volume anónimo para node_modules (mejor rendimiento)
-      - /app/node_modules
-      - npm-cache:/home/nodeuser/.npm # Añadir esta línea Optimización 1: Caché de npm
+      - npm-cache:/home/node/.npm # Añadir esta línea Optimización 1: Caché de npm
     ports:
-      - "3000:3000" # React, Express, NestJS
-      - "5555:5555" # Añade esta línea para Prisma Studio
+      - '3000:3000' # React, Express, NestJS
+      - '5555:5555' # Añade esta línea para Prisma Studio
       #- "5174:5173" # Vite * Mapeo: Accedes por 5174 en Windows -> 5173 en Docker
       #- "4200:4200"    # Angular
       #- "8089:8080"    # Vue CLI
