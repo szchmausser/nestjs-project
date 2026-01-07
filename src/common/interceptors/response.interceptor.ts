@@ -7,7 +7,7 @@ import {
 import { response, type Request } from 'express';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
-import { StandardResponse } from 'src/auth/interfaces/standard-response.interface';
+import { StandardResponse } from 'src/authentication/interfaces/standard-response.interface';
 
 /**
  * INTERFAZ: StandardResponse

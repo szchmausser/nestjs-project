@@ -1,11 +1,13 @@
 import { Module, ValidationPipe } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
-import { PrismaService } from './prisma.service';
-import { AuthModule } from './auth/auth.module';
-import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
+import { PrismaModule } from './prisma/prisma.module';
+import { AuthenticationModule } from './authentication/authentication.module';
+import { JwtAuthGuard } from './authentication/guards/jwt-auth.guard';
 import { AppController } from './app.controller';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-import { PermissionModule } from './permission/permission.module';
+import { AuthorizationModule } from './authorization/authorization.module';
+import { UsersModule } from './users/users.module';
+import { PostsModule } from './posts/posts.module';
 
 /**
  * MÓDULO RAÍZ: AppModule
@@ -15,17 +17,17 @@ import { PermissionModule } from './permission/permission.module';
 @Module({
   imports: [
     // Encapsula toda la lógica de JWT, Estrategias y manejo de usuarios
-    AuthModule,
-    PermissionModule,
+    PrismaModule,
+    AuthenticationModule,
+    UsersModule,
+    PostsModule,
+    AuthorizationModule,
   ],
   controllers: [
     // Rutas de prueba para validar la seguridad
     AppController,
   ],
   providers: [
-    // Servicio central para la base de datos (ORM Prisma)
-    PrismaService,
-
     /**
      * PROVEEDOR: APP_GUARD (Seguridad por defecto)
      * Al registrar JwtAuthGuard aquí, estamos activando el "Escudo Global".

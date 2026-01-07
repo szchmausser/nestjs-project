@@ -1,6 +1,6 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 import type { Request } from 'express';
-import { UserPayload } from 'src/auth/interfaces/user-payload.interface';
+import type { UserPayload } from '../../authentication/interfaces/user-payload.interface';
 
 /**
  * DECORADOR: @CurrentUser

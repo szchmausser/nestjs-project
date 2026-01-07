@@ -6,9 +6,9 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { Prisma } from 'generated/prisma/client';
-import { ExceptionResponse } from 'src/auth/interfaces/exception-response.interface';
-import { PrismaErrorMeta } from 'src/auth/interfaces/prisma-errors-interface';
+import { Prisma } from 'src/prisma/generated/prisma/client';
+import { ExceptionResponse } from 'src/authentication/interfaces/exception-response.interface';
+import { PrismaErrorMeta } from 'src/authentication/interfaces/prisma-errors-interface';
 
 /**
  * FILTRO DE EXCEPCIONES GLOBAL: AllExceptionsFilter
